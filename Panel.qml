@@ -4,6 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import qs.Ui as Ui
+import "Model.js" as Model
 
 Ui.Panel {
     id: root
@@ -15,11 +16,13 @@ Ui.Panel {
     property var preferences: ({collapsed: [], favorites: []})
     readonly property string collector: decodeURIComponent(Qt.resolvedUrl("collector.py").toString().replace(/^file:\/\//, ""))
     property var pendingPreferences: null
+    readonly property var alertCounts: Model.counts(snapshot, preferences)
 
     function refresh() {
         if (!worker.running) { worker.command = ["python3", collector, "refresh"]; worker.running = true }
     }
     function tick() {
+        if (!prefsReader.running && !saveWorker.running && root.pendingPreferences === null) prefsReader.running = true
         if (!worker.running) { worker.command = ["python3", collector, "tick"]; worker.running = true }
     }
     function savePreferences(value) {
@@ -66,9 +69,9 @@ Ui.Panel {
     WidgetButton {
         id: button
         bar: root.bar
-        text: "☁ " + (root.snapshot.issue_count ? root.snapshot.issue_count : root.snapshot.error || root.snapshot.unavailable_count || !root.snapshot.checked_at ? "?" : "✓")
-        active: !!root.snapshot.issue_count || !!root.snapshot.error
-        tooltipText: "OmaXCloud · " + (root.snapshot.issue_count || 0) + " issues reported"
+        text: "☁ " + (root.alertCounts.issues ? root.alertCounts.issues : root.snapshot.error || root.alertCounts.unavailable || !root.snapshot.checked_at ? "?" : "✓")
+        active: !!root.alertCounts.issues || !!root.snapshot.error
+        tooltipText: "OmaXCloud · " + (root.alertCounts.issues || 0) + " issues reported"
         onPressed: function(mouseButton) { if (mouseButton === Qt.MiddleButton) root.refresh(); else root.toggle() }
     }
 

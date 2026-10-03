@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "Model.js" as Model
 
 FocusScope {
     id: root
@@ -15,6 +16,9 @@ FocusScope {
     property real uiScale: 1
     property double now: Date.now() / 1000
     property bool attentionOnly: false
+    property bool arrangeMode: false
+    property string managingAlerts: ""
+    readonly property var alertCounts: Model.counts(snapshot, preferences)
     readonly property color muted: Qt.alpha(foreground, 0.62)
     readonly property color line: Qt.alpha(foreground, 0.12)
     readonly property bool stale: !!snapshot.checked_at && now - snapshot.checked_at > (snapshot.interval_minutes || 60) * 60 + 300
@@ -32,31 +36,38 @@ FocusScope {
         return minutes < 1 ? "just now" : minutes < 60 ? minutes + "m ago" : minutes < 1440 ? Math.floor(minutes / 60) + "h ago" : Math.floor(minutes / 1440) + "d ago"
     }
     function dateText(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "Unavailable" }
-    function hasIssues(o) { return (o.issues || []).length > 0 || (o.unavailable || []).length > 0 }
+    function hasIssues(o) { return Model.active(o, preferences).length > 0 }
     function favorite(id) { return (preferences.favorites || []).indexOf(id) >= 0 }
     function collapsed(id) { return (preferences.collapsed || []).indexOf(id) >= 0 }
     function togglePreference(key, id) {
-        var p = {collapsed: (preferences.collapsed || []).slice(), favorites: (preferences.favorites || []).slice()}
+        var p = Model.copy(preferences)
         var index = p[key].indexOf(id)
         if (index < 0) p[key].push(id); else p[key].splice(index, 1)
-        preferences = p
         preferencesEdited(p)
     }
+    function toggleMute(o, key) {
+        var p = Model.copy(preferences), keys = p.muted_issues[o.id] || []
+        var index = keys.indexOf(key)
+        if (index < 0) keys.push(key); else keys.splice(index, 1)
+        p.muted_issues[o.id] = keys
+        preferencesEdited(p)
+    }
+    function canMove(o, direction) {
+        var ids = Model.siblings(snapshot, preferences, o).map(function(item) { return item.id })
+        var index = ids.indexOf(o.id)
+        return index >= 0 && index + direction >= 0 && index + direction < ids.length
+    }
+    function moveItem(o, direction) { preferencesEdited(Model.move(snapshot, preferences, o, direction)) }
     function makeRows(data, query, attention, prefs) {
-        var servers = (data.servers || []).slice()
-        var favorites = prefs.favorites || []
+        var servers = Model.sorted(data.servers || [], prefs.server_order, prefs)
         var closed = prefs.collapsed || []
-        function sort(a, b) {
-            return Number(favorites.indexOf(b.id) >= 0) - Number(favorites.indexOf(a.id) >= 0) || a.name.localeCompare(b.name)
-        }
-        servers.sort(sort)
         var q = query.trim().toLowerCase(), result = []
         servers.forEach(function(s) {
             var serverMatch = s.name.toLowerCase().indexOf(q) >= 0
-            var sites = (s.sites || []).filter(function(site) {
-                return (!q || serverMatch || site.name.toLowerCase().indexOf(q) >= 0) && (!attention || root.hasIssues(site))
-            }).sort(sort)
-            if (sites.length || ((!q || serverMatch) && (!attention || root.hasIssues(s)))) {
+            var sites = Model.sorted(s.sites || [], (prefs.site_order || {})[s.id], prefs).filter(function(site) {
+                return (!q || serverMatch || site.name.toLowerCase().indexOf(q) >= 0) && (!attention || Model.active(site, prefs).length > 0)
+            })
+            if (sites.length || ((!q || serverMatch) && (!attention || Model.active(s, prefs).length > 0))) {
                 result.push(s)
                 if (q || attention || closed.indexOf(s.id) < 0) sites.forEach(function(site) { result.push(site) })
             }
@@ -129,8 +140,8 @@ FocusScope {
             Label { text: (root.snapshot.site_count || 0) + " sites"; font.pixelSize: 16 * root.uiScale; color: root.muted }
             Item { Layout.fillWidth: true }
             Label {
-                text: root.snapshot.issue_count ? root.snapshot.issue_count + (root.snapshot.issue_count === 1 ? " issue" : " issues") : "No issues reported"
-                color: root.snapshot.issue_count ? root.urgent : root.accent
+                text: root.alertCounts.issues ? root.alertCounts.issues + (root.alertCounts.issues === 1 ? " issue" : " issues") : root.alertCounts.muted ? "No active issues" : "No issues reported"
+                color: root.alertCounts.issues ? root.urgent : root.accent
                 visible: !!root.snapshot.checked_at
             }
         }
@@ -167,7 +178,9 @@ FocusScope {
                 Keys.onDownPressed: { list.forceActiveFocus(); list.currentIndex = 0 }
                 Keys.onEscapePressed: { if (text) text = ""; else root.closeRequested() }
             }
-            Action { text: "Attention needed"; checkable: true; checked: root.attentionOnly; onClicked: root.attentionOnly = checked }
+            Action { text: "Attention needed"; checkable: true; checked: root.attentionOnly; onClicked: { root.attentionOnly = checked; root.arrangeMode = false } }
+            Action { text: root.arrangeMode ? "Done" : "Arrange"; checkable: true; checked: root.arrangeMode; onClicked: { root.arrangeMode = checked; if (checked) { root.attentionOnly = false; search.text = "" } } }
+
         }
         ListView {
             id: list
@@ -185,7 +198,13 @@ FocusScope {
             Keys.onRightPressed: { var o = root.rows[currentIndex]; if (o && o.kind === "server" && root.collapsed(o.id)) root.togglePreference("collapsed", o.id) }
             Keys.onLeftPressed: { var o = root.rows[currentIndex]; if (o && o.kind === "server" && !root.collapsed(o.id)) root.togglePreference("collapsed", o.id) }
             Keys.onPressed: function(event) {
-                if (event.text === "j") { incrementCurrentIndex(); event.accepted = true }
+                if ((event.modifiers & Qt.AltModifier) && (event.key === Qt.Key_Up || event.key === Qt.Key_Down) && root.rows[currentIndex]) {
+                    var selected = root.rows[currentIndex]
+                    root.moveItem(selected, event.key === Qt.Key_Up ? -1 : 1)
+                    for (var i = 0; i < root.rows.length; i++) if (root.rows[i].id === selected.id) { currentIndex = i; break }
+                    event.accepted = true
+                }
+                else if (event.text === "j") { incrementCurrentIndex(); event.accepted = true }
                 else if (event.text === "k") { decrementCurrentIndex(); event.accepted = true }
                 else if (event.text === "f" && root.rows[currentIndex]) { root.togglePreference("favorites", root.rows[currentIndex].id); event.accepted = true }
             }
@@ -194,17 +213,27 @@ FocusScope {
                 required property var modelData
                 required property int index
                 readonly property bool server: modelData.kind === "server"
-                x: server ? 0 : 14 * root.uiScale
-                width: list.width - x - 12 * root.uiScale
+                readonly property real indent: server ? 0 : 24 * root.uiScale
+                transform: Translate { x: card.indent }
+                width: list.width - indent - 12 * root.uiScale
                 height: details.implicitHeight + 24 * root.uiScale
                 radius: 9 * root.uiScale
-                color: Qt.alpha(root.foreground, server ? 0.055 : 0.025)
-                border.color: ListView.isCurrentItem && list.activeFocus ? root.accent : root.line
+                color: server ? Qt.alpha(root.accent, 0.13) : Qt.alpha(root.foreground, 0.025)
+                border.width: server ? 2 : 1
+                border.color: ListView.isCurrentItem && list.activeFocus ? root.accent : server ? Qt.alpha(root.accent, 0.65) : root.line
+                Rectangle { visible: card.server; x: 0; y: 10 * root.uiScale; width: 4 * root.uiScale; height: parent.height - 20 * root.uiScale; radius: 2 * root.uiScale; color: root.accent }
                 ColumnLayout {
                     id: details
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                     anchors.margins: 12 * root.uiScale
                     spacing: 8 * root.uiScale
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: card.server ? "SERVER" : "SITE"; color: card.server ? root.accent : root.muted; font.pixelSize: 9 * root.uiScale; font.bold: true; font.letterSpacing: 1.5 }
+                        Item { Layout.fillWidth: true }
+                        Action { visible: root.arrangeMode; text: "↑"; enabled: root.canMove(card.modelData, -1); onClicked: root.moveItem(card.modelData, -1); Accessible.name: "Move " + card.modelData.name + " up" }
+                        Action { visible: root.arrangeMode; text: "↓"; enabled: root.canMove(card.modelData, 1); onClicked: root.moveItem(card.modelData, 1); Accessible.name: "Move " + card.modelData.name + " down" }
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         Action {
@@ -245,7 +274,7 @@ FocusScope {
                                 readonly property var value: (card.modelData.metrics || {})[modelData + "_usage"]
                                 Layout.fillWidth: true
                                 spacing: 5 * root.uiScale
-                                Label { text: metric.modelData.toUpperCase() + "  " + (typeof metric.value === "number" ? Math.round(metric.value) + "%" : "—"); color: root.muted; font.pixelSize: 11 * root.uiScale }
+                                Label { text: metric.modelData.toUpperCase() + "  " + (typeof metric.value === "number" ? Math.round(metric.value) + "%" : "N/A"); color: root.muted; font.pixelSize: 11 * root.uiScale }
                                 Rectangle {
                                     Layout.fillWidth: true; height: 3 * root.uiScale; radius: height / 2; color: root.line
                                     Rectangle { width: parent.width * (typeof metric.value === "number" ? Math.max(0, Math.min(100, metric.value)) / 100 : 0); height: parent.height; radius: parent.radius; color: metric.value >= 85 ? root.urgent : root.accent }
@@ -262,8 +291,10 @@ FocusScope {
                         font.pixelSize: 11 * root.uiScale
                         text: {
                             var m = card.modelData.maintenance
-                            var source = (card.modelData.metrics || {}).recorded_at
+                            var metrics = card.modelData.metrics || {}
+                            var source = metrics.recorded_at
                             return (source ? "Metrics sampled " + root.age(Date.parse(source) / 1000) + " · " : "") +
+                                (metrics.history_recorded_at ? (metrics.history_fields || []).join(" / ") + " from history " + root.age(Date.parse(metrics.history_recorded_at) / 1000) + " · " : "") +
                                 (m ? (m.reboot_required ? "Reboot required" : "No reboot flag") + " · OS updates: " + (typeof m.updates === "number" ? m.updates : "unavailable") + " · Package cache: " + root.age(m.apt_checked_at) : "Reboot / OS updates: optional SSH check") + "\nServer backups: " + (card.modelData.server_backup || "Unavailable")
                         }
                     }
@@ -298,17 +329,29 @@ FocusScope {
                         }
                     }
                     Repeater {
-                        model: card.modelData.issues || []
-                        delegate: Label { required property var modelData; Layout.fillWidth: true; wrapMode: Text.Wrap; elide: Text.ElideNone; text: (modelData.severity === "critical" ? "!  " : "△  ") + modelData.message; color: root.urgent; font.pixelSize: 12 * root.uiScale }
+                        model: Model.active(card.modelData, root.preferences)
+                        delegate: RowLayout {
+                            id: notice
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; elide: Text.ElideNone; text: (notice.modelData.severity === "critical" ? "!  " : notice.modelData.severity === "unknown" ? "?  " : "△  ") + notice.modelData.message; color: notice.modelData.severity === "unknown" ? root.muted : root.urgent; font.pixelSize: 12 * root.uiScale }
+                            Action { visible: !card.server; text: "Mute"; onClicked: root.toggleMute(card.modelData, notice.modelData.key); Accessible.name: "Mute " + notice.modelData.message + " for " + card.modelData.name }
+                        }
                     }
-                    Label {
-                        visible: (card.modelData.unavailable || []).length > 0
-                        Layout.fillWidth: true
-                        wrapMode: Text.Wrap
-                        elide: Text.ElideNone
-                        text: "?  " + (card.modelData.unavailable || []).join(" · ")
-                        color: root.muted
-                        font.pixelSize: 11 * root.uiScale
+                    Action {
+                        visible: !card.server && Model.mutedNotices(card.modelData, root.preferences).length > 0
+                        text: (root.managingAlerts === card.modelData.id ? "Hide muted alerts" : "Muted alerts") + " (" + Model.mutedNotices(card.modelData, root.preferences).length + ")"
+                        onClicked: root.managingAlerts = root.managingAlerts === card.modelData.id ? "" : card.modelData.id
+                    }
+                    Repeater {
+                        model: root.managingAlerts === card.modelData.id ? Model.mutedNotices(card.modelData, root.preferences) : []
+                        delegate: RowLayout {
+                            id: mutedNotice
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; elide: Text.ElideNone; text: "Muted · " + mutedNotice.modelData.message; color: root.muted; font.pixelSize: 12 * root.uiScale }
+                            Action { text: "Unmute"; onClicked: root.toggleMute(card.modelData, mutedNotice.modelData.key); Accessible.name: "Unmute " + mutedNotice.modelData.message }
+                        }
                     }
                 }
             }
@@ -324,8 +367,8 @@ FocusScope {
         }
         RowLayout {
             Layout.fillWidth: true
-            Label { text: "Read-only · Enter opens xCloud · Ctrl+R refreshes"; color: root.muted; font.pixelSize: 10 * root.uiScale; Layout.fillWidth: true }
-            Label { text: root.snapshot.unavailable_count ? root.snapshot.unavailable_count + " checks unavailable" : ""; color: root.muted; font.pixelSize: 10 * root.uiScale }
+            Label { text: root.arrangeMode ? "Use ↑ / ↓ to reorder · Sites stay within their server" : "Read-only · Enter opens xCloud · Ctrl+R refreshes"; color: root.muted; font.pixelSize: 10 * root.uiScale; Layout.fillWidth: true }
+            Label { text: root.alertCounts.unavailable ? root.alertCounts.unavailable + " checks unavailable" : ""; color: root.muted; font.pixelSize: 10 * root.uiScale }
         }
     }
 }

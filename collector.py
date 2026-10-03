@@ -8,6 +8,7 @@ import getpass
 import html
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -75,6 +76,81 @@ def timestamp(value):
 
 def numeric(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def percent(value):
+    """Accept numbers and numeric percentage strings, never bytes or load averages."""
+    if isinstance(value, str):
+        value = value.strip().removesuffix("%").strip()
+        if not re.fullmatch(r"\d+(?:\.\d+)?", value):
+            return None
+        value = float(value)
+    return float(value) if numeric(value) and math.isfinite(value) and 0 <= value <= 100 else None
+
+
+def normalize_metrics(payload):
+    if not isinstance(payload, dict):
+        return {}
+    # Preserve only explicitly named percentage fields. No arbitrary recursive
+    # search: a load average or used-byte count must not become a percentage.
+    source = payload
+    for wrapper in ("stats", "metrics", "monitoring", "data"):
+        if isinstance(source.get(wrapper), dict):
+            source = source[wrapper]
+            break
+    result = {}
+    for name, aliases in {"cpu": ("cpu_usage",), "memory": ("memory_usage", "ram_usage"), "disk": ("disk_usage",)}.items():
+        candidates = [source.get(key) for key in aliases]
+        nested = source.get(name, source.get("ram") if name == "memory" else None)
+        if isinstance(nested, dict):
+            candidates.extend(nested.get(key) for key in ("usage_percent", "percentage", "percent"))
+        value = next((percent(v) for v in candidates if percent(v) is not None), None)
+        if value is not None:
+            result[name + "_usage"] = value
+    result["recorded_at"] = source.get("recorded_at") or source.get("sampled_at")
+    return result
+
+
+def server_metrics(api, prefix, server):
+    errors = []
+    try:
+        metrics = normalize_metrics(api.get(prefix + "/monitoring"))
+    except DataError as error:
+        metrics = {}
+        errors.append(str(error))
+    keys = ("cpu_usage", "memory_usage", "disk_usage")
+    missing = [key for key in keys if key not in metrics]
+    if missing:
+        try:
+            history = api.get(prefix + "/monitoring/history", {"range": "24h"})
+            samples = history.get("samples", []) if isinstance(history, dict) else []
+            dated = [r for r in samples if isinstance(r, dict) and timestamp(r.get("sampled_at")) is not None]
+            if dated:
+                latest = normalize_metrics(max(dated, key=lambda r: timestamp(r["sampled_at"])))
+                for key in missing:
+                    if key in latest:
+                        metrics[key] = latest[key]
+                        metrics.setdefault("history_fields", []).append(key.removesuffix("_usage").upper())
+                if metrics.get("history_fields"):
+                    metrics["history_recorded_at"] = latest.get("recorded_at")
+        except DataError as error:
+            errors.append("History: " + str(error))
+    missing = [key.removesuffix("_usage").upper() for key in keys if key not in metrics]
+    if missing:
+        server["unavailable"].append("Resource usage: " + ", ".join(missing) + " unavailable" + (" (" + "; ".join(errors) + ")" if errors else " — no usable percentages returned"))
+    return metrics
+
+
+def clean_preferences(data):
+    if not isinstance(data, dict):
+        raise DataError("Invalid UI state")
+    def strings(values):
+        return list(dict.fromkeys(v for v in values if isinstance(v, str) and len(v) <= 500))[:500] if isinstance(values, list) else []
+    result = {k: strings(data.get(k)) for k in ("collapsed", "favorites", "server_order")}
+    for key in ("site_order", "muted_issues"):
+        mapping = data.get(key, {})
+        result[key] = {k: strings(v) for k, v in mapping.items() if isinstance(k, str) and len(k) <= 500} if isinstance(mapping, dict) else {}
+    return result
 
 
 def load_config():
@@ -277,8 +353,7 @@ def collect(api, cfg, now):
             issue(server, "status", server["status"], "critical")
         elif state not in {"provisioned", "modified", "created"}:
             server["unavailable"].append("Server is not in a ready state: " + (state or "unknown"))
-        metrics = fetch_optional(api, prefix + "/monitoring", server, "Resource usage")
-        server["metrics"] = metrics if isinstance(metrics, dict) else {}
+        server["metrics"] = server_metrics(api, prefix, server)
         for name, threshold in [("cpu", 90), ("memory", 90), ("disk", 85)]:
             value = server["metrics"].get(name + "_usage")
             if numeric(value) and value >= threshold:
@@ -300,6 +375,7 @@ def collect(api, cfg, now):
         sites = fetch_optional(api, prefix + "/sites", server, "Site inventory", True)
         for raw_site in sites or []:
             site = resource(raw_site, "site")
+            site["server_id"] = server["id"]
             site["type"] = str(raw_site.get("type") or "unknown")
             site["status"] = str(raw_site.get("deploy_state") or "unknown")
             site["public_url"] = safe_url("https://" + str(raw_site.get("domain_name") or ""))
@@ -317,7 +393,7 @@ def collect(api, cfg, now):
                 backups = fetch_optional(api, p + suffix, site, "Backups", True)
                 site["backup"] = backup_summary(backups, now, options.get("backup_max_age_hours", cfg["backup_max_age_hours"]))
                 if site["backup"]["state"] in {"missing", "failed", "overdue"}:
-                    issue(site, "backup", {"missing": "No successful site backup", "failed": "Latest backup attempt failed", "overdue": "Site backup overdue"}[site["backup"]["state"]])
+                    issue(site, "backup." + site["backup"]["state"], {"missing": "No successful site backup", "failed": "Latest backup attempt failed", "overdue": "Site backup overdue"}[site["backup"]["state"]])
                 elif site["backup"]["state"] == "unknown":
                     site["unavailable"].append("Backup dates could not be interpreted")
             ssl = fetch_optional(api, p + "/ssl", site, "SSL")
@@ -349,7 +425,7 @@ def collect(api, cfg, now):
             server["sites"].append(site)
         servers.append(server)
     objects = [obj for s in servers for obj in [s] + s["sites"]]
-    return {"servers": servers, "checked_at": now, "last_attempt": now,
+    return {"snapshot_version": 2, "servers": servers, "checked_at": now, "last_attempt": now,
             "next_check": now + cfg["interval_minutes"] * 60,
             "interval_minutes": cfg["interval_minutes"], "error": "", "configured": True,
             "issue_count": sum(len(o["issues"]) for o in objects),
@@ -357,10 +433,12 @@ def collect(api, cfg, now):
             "site_count": sum(len(s["sites"]) for s in servers)}
 
 
-def notification_changes(previous, current):
+def notification_changes(previous, current, preferences=None):
+    preferences = preferences if preferences is not None else read_json(CONFIG / "ui-state.json", {})
+    muted = clean_preferences(preferences)["muted_issues"]
     def keys(snapshot):
         return {o["id"] + ":" + i["key"] for s in snapshot.get("servers", [])
-                for o in [s] + s.get("sites", []) for i in o.get("issues", [])}
+                for o in [s] + s.get("sites", []) for i in o.get("issues", []) if i["key"] not in muted.get(o["id"], [])}
     old, new = keys(previous), keys(current)
     added = len(new - old)
     # Missing/partial data cannot prove recovery.
@@ -386,7 +464,7 @@ def tick(force=False):
             return read_json(CACHE / "snapshot.json", {}) | {"refreshing": True}
         previous = read_json(CACHE / "snapshot.json", {})
         now = time.time()
-        if now < previous.get("retry_after", 0) or (not force and now < previous.get("next_check", 0)):
+        if now < previous.get("retry_after", 0) or (not force and previous.get("snapshot_version") == 2 and now < previous.get("next_check", 0)):
             return previous
         try:
             cfg = load_config()
@@ -400,7 +478,7 @@ def tick(force=False):
         except (DataError, TypeError, KeyError, ValueError, AttributeError) as error:
             # Keep the previous successful snapshot, including its old timestamp.
             message = str(error) if isinstance(error, DataError) else "Unexpected data or configuration; see README troubleshooting"
-            current = previous | {"error": message, "last_attempt": now, "next_check": now + 300,
+            current = previous | {"snapshot_version": 2, "error": message, "last_attempt": now, "next_check": now + 300,
                                   "configured": (CONFIG / "token").exists()}
         atomic_json(CACHE / "snapshot.json", current)
         return current
@@ -425,17 +503,45 @@ def setup():
     input("Press Enter to close. ")
 
 
+def diagnose_metrics():
+    """Shareable shape diagnostics: no tokens, server names, UUIDs or raw values."""
+    cfg = load_config()
+    api = API(read_token(), cfg["team_id"])
+    def shape(value, depth=0):
+        if depth > 4:
+            return type(value).__name__
+        if isinstance(value, dict):
+            return {str(k): shape(v, depth + 1) for k, v in list(value.items())[:40]}
+        if isinstance(value, list):
+            return [shape(value[0], depth + 1)] if value else []
+        return type(value).__name__
+    result = []
+    for index, row in enumerate(api.items("/servers"), 1):
+        entry = {"server_number": index}
+        path = "/servers/" + quote(str(row["uuid"]), safe="")
+        for label, suffix in [("latest", "/monitoring"), ("history", "/monitoring/history")]:
+            try:
+                data = api.get(path + suffix, {"range": "24h"} if label == "history" else None)
+                entry[label] = shape(data)
+            except DataError as error:
+                entry[label] = str(error)
+        result.append(entry)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["tick", "refresh", "cached", "setup", "ui-state", "save-ui"])
+    parser.add_argument("command", choices=["tick", "refresh", "cached", "setup", "ui-state", "save-ui", "diagnose-metrics"])
     args = parser.parse_args()
     if args.command == "setup":
         setup()
+    elif args.command == "diagnose-metrics":
+        print(json.dumps(diagnose_metrics(), indent=2))
     elif args.command == "save-ui":
         data = json.loads(sys.stdin.readline(16384))
         if not isinstance(data, dict):
             raise DataError("Invalid UI state")
-        atomic_json(CONFIG / "ui-state.json", {k: data[k] for k in ("collapsed", "favorites") if isinstance(data.get(k), list)})
+        atomic_json(CONFIG / "ui-state.json", clean_preferences(data))
     else:
         value = (read_json(CONFIG / "ui-state.json", {}) if args.command == "ui-state" else
                  read_json(CACHE / "snapshot.json", {}) if args.command == "cached" else tick(args.command == "refresh"))

@@ -1,8 +1,11 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -35,6 +38,83 @@ def backup(status, ts):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_metrics_normalize_text_percentages_and_ram_alias(self):
+        result = c.normalize_metrics({"cpu_usage": "12.4%", "ram_usage": "68.1", "disk_usage": "0"})
+        self.assertEqual([result[k] for k in ("cpu_usage", "memory_usage", "disk_usage")], [12.4, 68.1, 0])
+
+    def test_metrics_accept_explicit_nested_percentages(self):
+        result = c.normalize_metrics({"stats": {"cpu": {"percentage": "12%"}, "memory": {"usage_percent": 50}, "disk": {"percent": "90"}}})
+        self.assertEqual(result["memory_usage"], 50)
+        self.assertEqual(result["disk_usage"], 90)
+
+    def test_metrics_do_not_turn_missing_bytes_or_load_into_zero(self):
+        for value in [None, True, "", "12 GB", "NaN", float("nan"), 101, -1, {"used": 100}]:
+            self.assertIsNone(c.percent(value))
+        self.assertNotIn("cpu_usage", c.normalize_metrics({"cpu": {"load": 1.5}}))
+
+    def test_metrics_history_fallback_uses_latest_dated_sample(self):
+        api = c.API("fake", spacing=0)
+        server = {"unavailable": []}
+        with patch.object(api, "get", side_effect=[{}, {"samples": [
+            {"cpu_usage": "22", "ram_usage": "44", "disk_usage": "66", "sampled_at": "2026-10-03T01:00:00Z"},
+            {"cpu_usage": 1, "ram_usage": 2, "disk_usage": 3, "sampled_at": "2026-10-02T01:00:00Z"}]}]):
+            result = c.server_metrics(api, "/servers/test", server)
+        self.assertEqual(result["cpu_usage"], 22)
+        self.assertEqual(result["memory_usage"], 44)
+        self.assertEqual(server["unavailable"], [])
+        self.assertEqual(result["history_recorded_at"], "2026-10-03T01:00:00Z")
+
+    def test_metrics_skip_history_when_primary_is_complete(self):
+        api = c.API("fake", spacing=0)
+        with patch.object(api, "get", return_value={"cpu_usage": "0", "memory_usage": 20, "disk_usage": 30}) as get:
+            c.server_metrics(api, "/servers/test", {"unavailable": []})
+            self.assertEqual(get.call_count, 1)
+
+    def test_metrics_partial_failure_is_visible_not_zero(self):
+        api = c.API("fake", spacing=0)
+        server = {"unavailable": []}
+        with patch.object(api, "get", side_effect=[{"cpu_usage": 5}, c.DataError("Permission unavailable")]):
+            result = c.server_metrics(api, "/servers/test", server)
+        self.assertEqual(result["cpu_usage"], 5)
+        self.assertNotIn("disk_usage", result)
+        self.assertIn("MEMORY, DISK unavailable", server["unavailable"][0])
+
+    def test_preferences_preserve_order_and_mutes(self):
+        prefs = {"collapsed": ["a"], "favorites": ["b"], "server_order": ["s2", "s1"],
+                 "site_order": {"s1": ["b", "a"]}, "muted_issues": {"a": ["backup.missing"]}}
+        self.assertEqual(c.clean_preferences(prefs), prefs)
+
+    def test_preferences_cli_round_trip(self):
+        prefs = {"collapsed": ["a"], "favorites": ["b"], "server_order": ["s2", "s1"],
+                 "site_order": {"s1": ["b", "a"]}, "muted_issues": {"a": ["backup.missing"]}}
+        with tempfile.TemporaryDirectory() as directory:
+            env = os.environ | {"XDG_CONFIG_HOME": directory}
+            subprocess.run([sys.executable, str(ROOT / "collector.py"), "save-ui"],
+                           input=json.dumps(prefs) + "\n", text=True, env=env, check=True, timeout=5)
+            saved = subprocess.check_output([sys.executable, str(ROOT / "collector.py"), "ui-state"], env=env, text=True, timeout=5)
+            self.assertEqual(json.loads(saved), prefs)
+            self.assertEqual((Path(directory) / "omaxcloud/ui-state.json").stat().st_mode & 0o777, 0o600)
+
+    def test_muting_does_not_announce_recovery(self):
+        old = {"servers": [{"id": "s", "issues": [], "sites": [{"id": "a", "issues": [{"key": "backup.missing"}]}]}]}
+        with patch.object(c.subprocess, "run") as notify:
+            c.notification_changes(old, old, {"muted_issues": {"a": ["backup.missing"]}})
+            notify.assert_not_called()
+
+    def test_muting_one_site_keeps_other_site_alerts(self):
+        state = {"servers": [{"id": "s", "issues": [], "sites": [
+            {"id": "a", "issues": [{"key": "backup.missing"}]},
+            {"id": "b", "issues": [{"key": "backup.missing"}]}]}]}
+        with patch.object(c.subprocess, "run") as notify:
+            c.notification_changes({}, state, {"muted_issues": {"a": ["backup.missing"]}})
+            self.assertIn("1 new issue(s)", notify.call_args.args[0][-1])
+
+    def test_muting_missing_backup_does_not_mute_failed_backup(self):
+        state = {"servers": [{"id": "s", "issues": [], "sites": [{"id": "a", "issues": [{"key": "backup.failed"}]}]}]}
+        with patch.object(c.subprocess, "run") as notify:
+            c.notification_changes({}, state, {"muted_issues": {"a": ["backup.missing"]}})
+            self.assertEqual(notify.call_count, 1)
+
     def test_uses_published_api_response_shapes(self):
         data = c.collect(FixtureAPI(), c.DEFAULTS, NOW)
         self.assertEqual(data["site_count"], 1)
@@ -134,7 +214,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_not_due_never_reads_token_or_calls_api(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(c, "CACHE", Path(directory)), patch.object(c, "read_token") as token:
-            c.atomic_json(c.CACHE / "snapshot.json", {"next_check": time.time() + 3600})
+            c.atomic_json(c.CACHE / "snapshot.json", {"snapshot_version": 2, "next_check": time.time() + 3600})
             c.tick()
             token.assert_not_called()
 

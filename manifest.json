@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "patrikhallgren.omaxcloud",
   "name": "OmaXCloud",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Patrik Hallgren",
   "description": "Hourly xCloud server and site health, backups and maintenance",
   "kinds": ["bar-widget"],

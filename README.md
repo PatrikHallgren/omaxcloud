@@ -4,7 +4,7 @@ A native Omarchy Quattro bar plugin for xCloud. Two servers or ten sites: see wh
 
 ![OmaXCloud panel using synthetic example data](docs/preview.png)
 
-**Version 0.1.0 — initial release.** Targets Omarchy's Quattro / Quickshell plugin system, not the older Waybar desktop. Collector tests use the published xCloud OpenAPI examples. The actual dashboard was rendered and exercised offscreen with Qt 6.11. It has not yet been tested with a personal xCloud account or inside a live Omarchy desktop.
+**Version 0.2.0.** Targets Omarchy's Quattro / Quickshell plugin system, not the older Waybar desktop. Collector tests use the published xCloud OpenAPI examples. The actual dashboard was rendered and exercised offscreen with Qt 6.11. It has not yet been tested with a personal xCloud account or inside a live Omarchy desktop.
 
 ## Install
 
@@ -36,7 +36,17 @@ If the icon has not updated after setup, click **Refresh**. Automatic local chec
 | WordPress | Pending core/plugin/theme update total and security update count; old or missing scan data is explicitly flagged |
 | Optional | Public HTTPS availability from your laptop; OS updates and reboot flag through read-only SSH |
 
-Click a **server or site name** to open its management page on xCloud. The **↗** button opens the public website. Your browser's existing xCloud login is used; the API token is never put in a link. Click **☆** to pin favorites within their group and **− / +** to collapse or expand a server. Both preferences persist locally.
+Click a **server or site name** to open its management page on xCloud. The **↗** button opens the public website. Your browser's existing xCloud login is used; the API token is never put in a link. Click **☆** to pin favorites within their group and **− / +** to collapse or expand a server. Preferences persist locally. Server cards now have a stronger accent border, a colored rail, and a SERVER label; site cards are inset and labeled SITE.
+
+### Mute an issue for one site
+
+Click **Mute** next to a site's issue. It immediately disappears from the active issue list, bar count, and Attention needed filter, and stops contributing to desktop notifications. Other sites are unaffected. This only changes alerting; it does not stop collecting data or change anything on xCloud.
+
+Click **Muted alerts (n)** on that site, then **Unmute** to turn it back on. Saved mutes remain accessible even when an issue is no longer being reported. Missing, failed, and overdue backups have separate switches: muting “No successful site backup” does not suppress a future failed-backup alert. Unavailable-check messages can also be muted individually. A muted site remains visible in the normal view, with its actual backup/status details intact.
+
+### Reorder servers and sites
+
+Click **Arrange**, use **↑ / ↓** on a server or site, then **Done**. Servers move with their sites; sites stay inside their current server. The chosen order is saved separately for the server list and each server's sites. Manual order takes precedence over favorites. Newly discovered resources append after explicitly ordered entries. `Alt+Up/Down` moves a selected result too. Expand a server to reorder its sites.
 
 Search keeps matching sites grouped under their server. **Attention needed** includes reported issues and unavailable checks. `Ctrl+F` focuses search, `Down` moves into results, arrows or `j/k` navigate, `Enter` opens the selected xCloud page, `Left/Right` collapse/expand a selected server, `f` pins it, `Ctrl+R` refreshes, and `Esc` closes (or first clears search). Buttons are also keyboard focusable with Tab.
 
@@ -102,7 +112,7 @@ The update count reflects the **server's existing package cache**. The panel sho
 | --- | --- |
 | `~/.config/omaxcloud/token` | Private read-only API token, mode 600 |
 | `~/.config/omaxcloud/config.json` | Collection settings |
-| `~/.config/omaxcloud/ui-state.json` | Favorites and collapsed groups |
+| `~/.config/omaxcloud/ui-state.json` | Favorites, collapsed groups, per-site muted alerts, server/site ordering |
 | `~/.cache/omaxcloud/snapshot.json` | Last snapshot; includes server names, sites and statuses |
 
 The cache respects `$XDG_CACHE_HOME`. Written files use mode 600. No runtime files belong in the repository. Only the token is used as an API credential; SSH uses your local SSH configuration. No telemetry or third-party service is involved.
@@ -111,10 +121,16 @@ The cache respects `$XDG_CACHE_HOME`. Written files use mode 600. No runtime fil
 - **403 / unavailable:** Verify token scopes and team permissions. Some resources/features may be unavailable for your account or site type.
 - **SSL unavailable:** There may be no certificate record in xCloud (for example, TLS is managed elsewhere). This is unknown, not an automatic outage.
 - **Old WordPress scan:** The plugin reads xCloud's existing scan; it never triggers a write operation to refresh it.
+- **Metrics missing:** v0.2 normalizes numeric strings, percent strings, `ram_usage`, and explicitly named nested percentage fields. If the latest endpoint lacks a metric, it tries the latest dated sample from the documented history endpoint. History can require an xCloud Pro plan. History-derived values show their sample age; missing values show N/A with an explanation, never an invented zero. If values remain unavailable, run the following and share its output (response field names/types only, not your token, server names or UUIDs):
+
+  ```bash
+  python3 ~/.config/omarchy/plugins/patrikhallgren.omaxcloud/collector.py diagnose-metrics
+  ```
+
 - **Blank or missing widget:** Verify `omarchy plugin list`, Python 3.10+, and a recent Quattro version. Capture shell errors without including your token.
 - **Inspect locally:** `python3 ~/.config/omarchy/plugins/patrikhallgren.omaxcloud/collector.py refresh` prints a sanitized status snapshot, but its domains/server names may still be private.
 
-Update with `omarchy plugin update patrikhallgren.omaxcloud`. Remove with `omarchy plugin remove patrikhallgren.omaxcloud`. Removal leaves your separate local settings/cache intact; remove those directories yourself if you also want to erase credentials and history, and revoke the token in xCloud.
+Update with `omarchy plugin update patrikhallgren.omaxcloud`, then click Refresh. Your token and local preferences are preserved. Remove with `omarchy plugin remove patrikhallgren.omaxcloud`. Removal leaves your separate local settings/cache intact; remove those directories yourself if you also want to erase credentials and history, and revoke the token in xCloud.
 
 ## Development and validation
 
@@ -131,6 +147,6 @@ python3 -m venv /tmp/omaxcloud-preview
 /tmp/omaxcloud-preview/bin/python tests/preview.py
 ```
 
-This renders the actual `Dashboard.qml` with synthetic data and verifies search, attention filtering and collapse behavior. It does not simulate the full Omarchy compositor or authenticate with xCloud. The preview image is illustrative, not account data.
+This renders the actual `Dashboard.qml` with synthetic data and verifies search, attention filtering, collapse, per-site mute/unmute counts, and server/site ordering. It does not simulate the full Omarchy compositor or authenticate with xCloud. The preview image is illustrative, not account data.
 
 Reference contracts checked: [xCloud OpenAPI](https://app.xcloud.host/api/v1/openapi.json), [Omarchy shell plugin guide](https://github.com/omacom/omarchy/blob/quattro/manual/32-shell-plugins.md), and upstream Omarchy commit `a85e29abb556816f4644cf975e98da694b486aa8`. See [API coverage](docs/API.md) for endpoint details.
