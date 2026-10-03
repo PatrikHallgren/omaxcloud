@@ -104,7 +104,7 @@ FocusScope {
     component Action: Button {
         id: action
         hoverEnabled: true
-        padding: 9 * root.uiScale
+        padding: 6 * root.uiScale
         font.family: root.fontFamily
         font.pixelSize: 12 * root.uiScale
         contentItem: Label {
@@ -216,7 +216,7 @@ FocusScope {
                 readonly property real indent: server ? 0 : 24 * root.uiScale
                 transform: Translate { x: card.indent }
                 width: list.width - indent - 12 * root.uiScale
-                height: details.implicitHeight + 24 * root.uiScale
+                height: details.implicitHeight + 16 * root.uiScale
                 radius: 9 * root.uiScale
                 color: server ? Qt.alpha(root.accent, 0.13) : Qt.alpha(root.foreground, 0.025)
                 border.width: server ? 2 : 1
@@ -225,11 +225,11 @@ FocusScope {
                 ColumnLayout {
                     id: details
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                    anchors.margins: 12 * root.uiScale
-                    spacing: 8 * root.uiScale
+                    anchors.margins: 8 * root.uiScale
+                    spacing: 5 * root.uiScale
                     RowLayout {
                         Layout.fillWidth: true
-                        Label { text: card.server ? "SERVER" : "SITE"; color: card.server ? root.accent : root.muted; font.pixelSize: 9 * root.uiScale; font.bold: true; font.letterSpacing: 1.5 }
+                        visible: root.arrangeMode
                         Item { Layout.fillWidth: true }
                         Action { visible: root.arrangeMode; text: "↑"; enabled: root.canMove(card.modelData, -1); onClicked: root.moveItem(card.modelData, -1); Accessible.name: "Move " + card.modelData.name + " up" }
                         Action { visible: root.arrangeMode; text: "↓"; enabled: root.canMove(card.modelData, 1); onClicked: root.moveItem(card.modelData, 1); Accessible.name: "Move " + card.modelData.name + " down" }
@@ -283,19 +283,37 @@ FocusScope {
                         }
                     }
                     Label {
-                        visible: card.server
+                        visible: card.server && text !== ""
                         Layout.fillWidth: true
-                        wrapMode: Text.Wrap
-                        elide: Text.ElideNone
+                        color: root.muted
+                        font.pixelSize: 11 * root.uiScale
+                        text: {
+                            var m = card.modelData.metrics || {}
+                            var current = m.recorded_at ? Date.parse(m.recorded_at) / 1000 : null
+                            var historical = m.history_recorded_at ? Date.parse(m.history_recorded_at) / 1000 : null
+                            if (current && historical && Math.abs(current - historical) > 60)
+                                return "Sample: " + root.age(current) + " · History: " + root.age(historical)
+                            return current || historical ? "Sample: " + root.age(current || historical) : ""
+                        }
+                        ToolTip.visible: sampleHover.hovered
+                        ToolTip.text: {
+                            var m = card.modelData.metrics || {}
+                            return "Latest: " + (m.recorded_at || "unavailable") +
+                                (m.history_recorded_at ? "\nHistory: " + m.history_recorded_at + " (" + (m.history_fields || []).join(", ") + ")" : "")
+                        }
+                        HoverHandler { id: sampleHover }
+                    }
+                    Label {
+                        visible: card.server && !!card.modelData.maintenance
+                        Layout.fillWidth: true
                         color: root.muted
                         font.pixelSize: 11 * root.uiScale
                         text: {
                             var m = card.modelData.maintenance
-                            var metrics = card.modelData.metrics || {}
-                            var source = metrics.recorded_at
-                            return (source ? "Metrics sampled " + root.age(Date.parse(source) / 1000) + " · " : "") +
-                                (metrics.history_recorded_at ? (metrics.history_fields || []).join(" / ") + " from history " + root.age(Date.parse(metrics.history_recorded_at) / 1000) + " · " : "") +
-                                (m ? (m.reboot_required ? "Reboot required" : "No reboot flag") + " · OS updates: " + (typeof m.updates === "number" ? m.updates : "unavailable") + " · Package cache: " + root.age(m.apt_checked_at) : "Reboot / OS updates: optional SSH check") + "\nServer backups: " + (card.modelData.server_backup || "Unavailable")
+                            if (!m) return ""
+                            return (m.reboot_required ? "Reboot needed" : "No reboot needed") +
+                                " · OS updates: " + (typeof m.updates === "number" ? m.updates : "unavailable") +
+                                " · Cache: " + root.age(m.apt_checked_at)
                         }
                     }
                     RowLayout {
@@ -305,7 +323,7 @@ FocusScope {
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 3 * root.uiScale
-                            Label { text: "LAST SUCCESSFUL BACKUP"; font.pixelSize: 9 * root.uiScale; font.letterSpacing: 0.6; color: root.muted }
+                            Label { text: "LAST BACKUP"; font.pixelSize: 9 * root.uiScale; font.letterSpacing: 0.6; color: root.muted }
                             Label { text: root.backupText(card.modelData); Layout.fillWidth: true; color: root.accent }
                         }
                         ColumnLayout {
@@ -324,8 +342,9 @@ FocusScope {
                         color: root.muted
                         text: {
                             var b = card.modelData.backup || {}, s = card.modelData.ssl || {}
-                            return "Latest attempt: " + (b.attempt_status || "unavailable") + (b.last_attempt ? " · " + root.age(b.last_attempt) : "") +
-                                "\nSSL: " + (s.expires_ts ? "expires " + new Date(s.expires_ts * 1000).toLocaleDateString() : "unavailable") + " · Website: " + (card.modelData.http || "Not checked")
+                            var attempt = b.last_attempt && (b.attempt_status !== "completed" || b.last_attempt !== b.last_success)
+                                ? "Last attempt: " + b.attempt_status + " · " + root.age(b.last_attempt) + "\n" : ""
+                            return attempt + "SSL: " + (s.expires_ts ? Qt.formatDate(new Date(s.expires_ts * 1000), "dd MMM yyyy") : "unavailable") + " · Site: " + (card.modelData.http || "Awaiting check")
                         }
                     }
                     Repeater {

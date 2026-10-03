@@ -29,3 +29,9 @@ Numeric strings and percentage strings are normalized to finite 0–100 numbers.
 This improves coverage but the user's live monitoring response has not been available for verification. `diagnose-metrics` can report field types without raw values to diagnose additional shapes.
 
 Per-site mute rules live in UI preferences and are applied to both UI counts and notification comparisons. Raw collected status is retained. Missing, failed, and overdue backups now use `backup.missing`, `backup.failed`, and `backup.overdue` keys so users can suppress one condition without suppressing the others. The cache schema version forces one fresh collection after upgrading.
+
+## v0.3 website status and compact cards
+
+Website checks now default to enabled, with a one-time migration of the old disabled default. A `website_check_policy: 1` marker preserves subsequent opt-outs. HTTP status is independent of xCloud's deployment state. Requests never contain the xCloud token. Redirect destinations must remain public HTTPS, are checked at each hop and are bounded; restricted responses are not labeled outages. These checks run only with collection while the laptop is on.
+
+The panel hides the SSH placeholder and full-server backup line, and offers `setup-ssh` for locally configured, verified SSH access. This release does not provision SSH keys or change servers.

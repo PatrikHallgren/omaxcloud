@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +17,7 @@ c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 EXAMPLES = json.loads((ROOT / "tests/api_examples.json").read_text())
 NOW = 1780000000
+TEST_CONFIG = c.DEFAULTS | {"http_checks": False}
 
 
 class FixtureAPI:
@@ -38,6 +39,46 @@ def backup(status, ts):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_website_checks_enabled_on_upgrade_then_respect_opt_out(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(c, "CONFIG", Path(directory)):
+            c.atomic_json(c.CONFIG / "config.json", {"http_checks": False, "ssh_hosts": {"s": "host"}})
+            upgraded = c.load_config()
+            self.assertTrue(upgraded["http_checks"])
+            self.assertEqual(upgraded["ssh_hosts"], {"s": "host"})
+            upgraded["http_checks"] = False
+            c.atomic_json(c.CONFIG / "config.json", upgraded)
+            self.assertFalse(c.load_config()["http_checks"])
+
+    def test_website_reports_online_after_https_redirect(self):
+        opener = MagicMock()
+        response = MagicMock(); response.__enter__.return_value.status = 200
+        opener.open.side_effect = [HTTPError("url", 301, "", {"Location": "https://www.example.com"}, None), response]
+        with patch.object(c.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]), patch.object(c, "build_opener", return_value=opener):
+            self.assertEqual(c.http_check("https://example.com"), "Online (200)")
+            self.assertEqual(opener.open.call_count, 2)
+            self.assertEqual(opener.open.call_args.args[0].full_url, "https://www.example.com")
+            self.assertNotIn("Authorization", opener.open.call_args.args[0].headers)
+
+    def test_website_does_not_follow_redirect_to_private_network(self):
+        opener = MagicMock()
+        opener.open.side_effect = HTTPError("url", 302, "", {"Location": "https://127.0.0.1"}, None)
+        with patch.object(c.socket, "getaddrinfo", side_effect=[[(2, 1, 6, "", ("93.184.216.34", 443))], [(2, 1, 6, "", ("127.0.0.1", 443))]]), patch.object(c, "build_opener", return_value=opener):
+            self.assertEqual(c.http_check("https://example.com"), "Skipped (private address)")
+            self.assertEqual(opener.open.call_count, 1)
+
+    def test_website_distinguishes_restricted_error_and_offline(self):
+        for code, expected in [(403, "Access restricted (403)"), (503, "HTTP error 503")]:
+            with patch.object(c.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]), patch.object(c, "build_opener") as build:
+                build.return_value.open.side_effect = HTTPError("url", code, "", {}, None)
+                self.assertEqual(c.http_check("https://example.com"), expected)
+        with patch.object(c.socket, "getaddrinfo", side_effect=OSError()):
+            self.assertEqual(c.http_check("https://example.com"), "Unreachable from laptop")
+
+    def test_website_redirect_loop_is_not_online(self):
+        with patch.object(c.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]), patch.object(c, "build_opener") as build:
+            build.return_value.open.side_effect = HTTPError("url", 302, "", {"Location": "https://example.com"}, None)
+            self.assertEqual(c.http_check("https://example.com"), "Redirect loop")
+
     def test_metrics_normalize_text_percentages_and_ram_alias(self):
         result = c.normalize_metrics({"cpu_usage": "12.4%", "ram_usage": "68.1", "disk_usage": "0"})
         self.assertEqual([result[k] for k in ("cpu_usage", "memory_usage", "disk_usage")], [12.4, 68.1, 0])
@@ -116,7 +157,7 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(notify.call_count, 1)
 
     def test_uses_published_api_response_shapes(self):
-        data = c.collect(FixtureAPI(), c.DEFAULTS, NOW)
+        data = c.collect(FixtureAPI(), TEST_CONFIG, NOW)
         self.assertEqual(data["site_count"], 1)
         server = data["servers"][0]
         self.assertEqual(server["metrics"]["memory_usage"], 68.1)
@@ -163,7 +204,7 @@ class CollectorTests(unittest.TestCase):
             if path.endswith("/ssl"): raise c.DataError("Permission unavailable")
             return original(path, params)
         api.get = get
-        result = c.collect(api, c.DEFAULTS, NOW)
+        result = c.collect(api, TEST_CONFIG, NOW)
         self.assertEqual(result["site_count"], 1)
         self.assertGreater(result["unavailable_count"], 0)
 
@@ -193,14 +234,14 @@ class CollectorTests(unittest.TestCase):
         for host in ["-oProxyCommand=evil", "host;reboot", "host $(evil)", "user@host\nreboot"]:
             with self.assertRaises(c.DataError): c.ssh_health(host)
 
-    def test_http_checks_disabled_by_default(self):
+    def test_http_checks_can_be_disabled(self):
         with patch.object(c, "http_check") as http:
-            c.collect(FixtureAPI(), c.DEFAULTS, NOW)
+            c.collect(FixtureAPI(), TEST_CONFIG, NOW)
             http.assert_not_called()
 
     def test_http_check_skips_private_network(self):
         with patch.object(c.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 443))]):
-            self.assertEqual(c.http_check("https://example.com"), "skipped: non-public address")
+            self.assertEqual(c.http_check("https://example.com"), "Skipped (private address)")
 
     def test_offline_keeps_previous_timestamp(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(c, "CACHE", Path(directory)), patch.object(c, "read_token", return_value="fake"), patch.object(c, "load_config", return_value=c.DEFAULTS):
@@ -214,7 +255,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_not_due_never_reads_token_or_calls_api(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(c, "CACHE", Path(directory)), patch.object(c, "read_token") as token:
-            c.atomic_json(c.CACHE / "snapshot.json", {"snapshot_version": 2, "next_check": time.time() + 3600})
+            c.atomic_json(c.CACHE / "snapshot.json", {"snapshot_version": 3, "next_check": time.time() + 3600})
             c.tick()
             token.assert_not_called()
 

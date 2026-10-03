@@ -19,15 +19,15 @@ now = time.time()
 def site(uid, name, issue=False, kind="wordpress"):
     return {"id": uid, "kind": "site", "name": name, "type": kind, "status": "deployed",
             "url": "https://app.xcloud.host/site/" + uid + "/dashboard", "public_url": "https://example.com",
-            "backup": {"state": "failed" if issue else "ok", "last_success": now - 7200, "last_attempt": now - 3600, "attempt_status": "failed" if issue else "completed"},
-            "ssl": {"expires_ts": now + 55 * 86400}, "http": "Not checked",
+            "backup": {"state": "failed" if issue else "ok", "last_success": now - 7200, "last_attempt": now - (3600 if issue else 7200), "attempt_status": "failed" if issue else "completed"},
+            "ssl": {"expires_ts": now + 55 * 86400}, "http": "Online (200)",
             "updates": {"summary": {"total_pending": 3 if issue else 0, "security_pending": 0}},
             "issues": [{"key": "backup.failed", "message": "Latest backup attempt failed", "severity": "warning"}] if issue else [], "unavailable": []}
 
 
 snapshot = {"checked_at": now - 480, "interval_minutes": 60, "issue_count": 1, "site_count": 5, "unavailable_count": 0,
             "servers": [
-                {"id": "demo-us", "kind": "server", "name": "US · Production", "status": "Provisioned", "provider": "Hetzner", "location": "Hillsboro", "url": "https://app.xcloud.host", "metrics": {"cpu_usage": 14, "memory_usage": 48, "disk_usage": 36}, "issues": [], "unavailable": [], "sites": [site("a", "garden-shop.example", True), site("b", "wholesale.example"), site("c", "automation.example", kind="oneclick")]},
+                {"id": "demo-us", "kind": "server", "name": "US · Production", "status": "Provisioned", "provider": "Hetzner", "location": "Hillsboro", "url": "https://app.xcloud.host", "metrics": {"cpu_usage": 14, "memory_usage": 48, "disk_usage": 36, "recorded_at": "2026-10-03T22:00:00Z", "history_recorded_at": "2026-10-03T22:00:00Z", "history_fields": ["CPU", "DISK"]}, "issues": [], "unavailable": [], "sites": [site("a", "garden-shop.example", True), site("b", "wholesale.example"), site("c", "automation.example", kind="oneclick")]},
                 {"id": "demo-eu", "kind": "server", "name": "EU · Services", "status": "Provisioned", "provider": "Hetzner", "location": "Helsinki", "url": "https://app.xcloud.host", "metrics": {"cpu_usage": 8, "memory_usage": 32, "disk_usage": 21}, "issues": [], "unavailable": [], "sites": [site("d", "europe.example"), site("e", "staging.example")]}]}
 
 app = QGuiApplication(sys.argv)

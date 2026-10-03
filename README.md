@@ -4,7 +4,7 @@ A native Omarchy Quattro bar plugin for xCloud. Two servers or ten sites: see wh
 
 ![OmaXCloud panel using synthetic example data](docs/preview.png)
 
-**Version 0.2.0.** Targets Omarchy's Quattro / Quickshell plugin system, not the older Waybar desktop. Collector tests use the published xCloud OpenAPI examples. The actual dashboard was rendered and exercised offscreen with Qt 6.11. It has not yet been tested with a personal xCloud account or inside a live Omarchy desktop.
+**Version 0.3.0.** Targets Omarchy's Quattro / Quickshell plugin system, not the older Waybar desktop. Collector tests use the published xCloud OpenAPI examples. The dashboard includes an offscreen Qt rendering and interaction test. It has not yet been tested with a personal xCloud account or inside a live Omarchy desktop.
 
 ## Install
 
@@ -34,9 +34,10 @@ If the icon has not updated after setup, click **Refresh**. Automatic local chec
 | Server | xCloud state, provider, location, CPU/RAM/disk usage and source sample age, required service failures |
 | Site | Deployment state, type, most recent successful backup and latest attempt separately, SSL expiry |
 | WordPress | Pending core/plugin/theme update total and security update count; old or missing scan data is explicitly flagged |
-| Optional | Public HTTPS availability from your laptop; OS updates and reboot flag through read-only SSH |
+| Website | Public HTTPS availability checked on refresh, including bounded HTTPS redirects |
+| Optional | OS updates and reboot flag through read-only SSH |
 
-Click a **server or site name** to open its management page on xCloud. The **↗** button opens the public website. Your browser's existing xCloud login is used; the API token is never put in a link. Click **☆** to pin favorites within their group and **− / +** to collapse or expand a server. Preferences persist locally. Server cards now have a stronger accent border, a colored rail, and a SERVER label; site cards are inset and labeled SITE.
+Click a **server or site name** to open its management page on xCloud. The **↗** button opens the public website. Your browser's existing xCloud login is used; the API token is never put in a link. Click **☆** to pin favorites within their group and **− / +** to collapse or expand a server. Preferences persist locally. Server cards have an accent border and colored rail; site cards are inset. The compact layout omits redundant SERVER/SITE labels and full-server backup placeholders. Metric age fits on one line; hover it for exact timestamps and history details. SSH maintenance appears only when configured and available.
 
 ### Mute an issue for one site
 
@@ -70,7 +71,8 @@ After setup, edit `~/.config/omaxcloud/config.json`. With XDG overrides, it is u
   "backup_max_age_hours": 36,
   "ssl_warning_days": 14,
   "notifications": true,
-  "http_checks": false,
+  "http_checks": true,
+  "website_check_policy": 1,
   "team_id": "",
   "ssh_hosts": {},
   "site_options": {}
@@ -78,7 +80,7 @@ After setup, edit `~/.config/omaxcloud/config.json`. With XDG overrides, it is u
 ```
 
 - **Backup age:** Default assumes daily backups plus a 12-hour allowance. Customize it to match each site's schedule.
-- **HTTP checks:** Opt-in, public HTTPS only, no cookies/authentication, no redirect following or body downloads. Redirects are displayed as HTTP 3xx, not falsely described as a verified destination. A failure reflects reachability from your laptop, not a global outage. Non-public addresses are skipped. Keep this off for private sites.
+- **HTTP checks:** Enabled by default, including a one-time upgrade from the previous default. Checks run hourly and on Refresh. They use public HTTPS GET requests without credentials, cookies or body downloads and follow up to five HTTPS redirects, checking destination addresses on each hop. The panel distinguishes Online, Access restricted, HTTP errors, redirects and Unreachable from laptop. This is a reachability check from your laptop, not continuous monitoring or proof that all application functions work. Private addresses are skipped. To opt out after upgrading, set `http_checks` to `false` and retain `website_check_policy: 1`.
 - **Team:** Empty uses the API token's default team. Set a granted team UUID if needed. Permission errors remain visible.
 - **Per-site options:** Map site UUIDs to `backup_max_age_hours` and/or `backup_mode` (`standard`, `docker`, or `off`). One-click apps use Docker backups by default; explicit `is_backup_supported: false` is honored for standard backups. Use `docker` for other Docker-backed sites. A 422 response means the endpoint does not support that resource and is shown as unavailable.
 
@@ -92,9 +94,17 @@ Example, inside `site_options`:
 
 ## Optional reboot and OS update checks
 
-The published xCloud API schema does **not** expose a server's reboot-required flag, general OS package update count, or full-server backup history. OmaXCloud labels these limitations explicitly. Site backups are never presented as server backups. Non-WordPress application update inventories are also unavailable through this integration.
+The published xCloud API schema does **not** expose a server's reboot-required flag, general OS package update count, or full-server backup history. The compact panel omits unavailable SSH information and full-server backup history. Site backups are never presented as server backups. Non-WordPress application update inventories are also unavailable through this integration.
 
-To enable reboot and OS updates, configure an SSH alias that already works from your laptop using a key and a verified host key. It can use your existing SSH config, including a Tailscale address. Then put the server UUID and SSH alias in `ssh_hosts`:
+To enable reboot and OS updates, first make sure an SSH alias or `user@host` already works from your laptop using a key and a verified host key. Run the guided setup:
+
+```bash
+python3 ~/.config/omarchy/plugins/patrikhallgren.omaxcloud/collector.py setup-ssh
+```
+
+It lists your servers and asks for the SSH connection for each one. Enter keeps the current setting; `-` disables it. A connection is saved only after a successful read-only check. Click Refresh afterward.
+
+Alternatively, configure an SSH alias manually. It can use your existing SSH config, including a Tailscale address. Then put the server UUID and SSH alias in `ssh_hosts`:
 
 ```json
 {
@@ -130,7 +140,7 @@ The cache respects `$XDG_CACHE_HOME`. Written files use mode 600. No runtime fil
 - **Blank or missing widget:** Verify `omarchy plugin list`, Python 3.10+, and a recent Quattro version. Capture shell errors without including your token.
 - **Inspect locally:** `python3 ~/.config/omarchy/plugins/patrikhallgren.omaxcloud/collector.py refresh` prints a sanitized status snapshot, but its domains/server names may still be private.
 
-Update with `omarchy plugin update patrikhallgren.omaxcloud`, then click Refresh. Your token and local preferences are preserved. Remove with `omarchy plugin remove patrikhallgren.omaxcloud`. Removal leaves your separate local settings/cache intact; remove those directories yourself if you also want to erase credentials and history, and revoke the token in xCloud.
+Update with `omarchy plugin update patrikhallgren.omaxcloud`, run `omarchy restart shell` to ensure the new interface loads, then click Refresh. Your token and local preferences are preserved. Remove with `omarchy plugin remove patrikhallgren.omaxcloud`. Removal leaves your separate local settings/cache intact; remove those directories yourself if you also want to erase credentials and history, and revoke the token in xCloud.
 
 ## Development and validation
 

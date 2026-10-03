@@ -21,7 +21,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit, urljoin
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 BASE = "https://app.xcloud.host/api/v1"
@@ -29,7 +29,7 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "oma
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omaxcloud"
 DEFAULTS = {"interval_minutes": 60, "backup_max_age_hours": 36,
             "ssl_warning_days": 14, "notifications": True,
-            "http_checks": False, "team_id": "", "ssh_hosts": {},
+            "http_checks": True, "website_check_policy": 1, "team_id": "", "ssh_hosts": {},
             "site_options": {}}
 
 
@@ -154,7 +154,14 @@ def clean_preferences(data):
 
 
 def load_config():
-    cfg = DEFAULTS | read_json(CONFIG / "config.json", {})
+    saved = read_json(CONFIG / "config.json", {})
+    cfg = DEFAULTS | saved
+    # v0.3 enables the website checks requested by the user, including existing
+    # installations whose setup wrote the old false default. One-time migration;
+    # subsequent explicit false settings remain respected.
+    migrate = "website_check_policy" not in saved and (CONFIG / "config.json").exists()
+    if migrate:
+        cfg["http_checks"] = True
     for key, minimum, maximum in [("interval_minutes", 5, 1440),
                                   ("backup_max_age_hours", 1, 8760),
                                   ("ssl_warning_days", 1, 365)]:
@@ -162,6 +169,8 @@ def load_config():
             raise DataError(f"Invalid configuration: {key}")
     if not isinstance(cfg["ssh_hosts"], dict) or not isinstance(cfg["site_options"], dict):
         raise DataError("ssh_hosts and site_options must be objects")
+    if migrate:
+        atomic_json(CONFIG / "config.json", cfg)
     return cfg
 
 
@@ -324,20 +333,39 @@ def ssh_health(host):
 
 
 def http_check(url):
-    """Opt-in public HTTPS check. No credentials, cookies, redirects or body reads."""
-    if not safe_url(url):
-        return "unavailable"
+    """Public HTTPS GET, bounded redirects; no credentials, cookies or body reads."""
+    deadline = time.monotonic() + 20
+    visited = set()
     try:
-        host = urlsplit(url).hostname
-        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-        if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
-            return "skipped: non-public address"
-        with build_opener(NoRedirect()).open(Request(url, headers={"User-Agent": "OmaXCloud/0.1"}), timeout=10) as response:
-            return f"HTTP {response.status}"
-    except HTTPError as error:
-        return f"HTTP {error.code}"
+        for _ in range(6):
+            if not safe_url(url):
+                return "Unverified redirect (HTTPS required)"
+            if url in visited:
+                return "Redirect loop"
+            visited.add(url)
+            host = urlsplit(url).hostname
+            addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
+                return "Skipped (private address)"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "Timed out"
+            try:
+                with build_opener(NoRedirect()).open(Request(url, headers={"User-Agent": "OmaXCloud/0.3"}), timeout=min(10, remaining)) as response:
+                    return f"Online ({response.status})"
+            except HTTPError as error:
+                if error.code in {301, 302, 303, 307, 308}:
+                    location = error.headers.get("Location")
+                    if not location:
+                        return f"Unverified redirect ({error.code})"
+                    url = urljoin(url, location)
+                elif error.code in {401, 403}:
+                    return f"Access restricted ({error.code})"
+                else:
+                    return f"HTTP error {error.code}"
+        return "Too many redirects"
     except (OSError, URLError, ValueError):
-        return "unreachable from laptop"
+        return "Unreachable from laptop"
 
 
 def collect(api, cfg, now):
@@ -417,15 +445,16 @@ def collect(api, cfg, now):
                 scan = timestamp(summary.get("last_scanned_at"))
                 if scan is None or now - scan > 86400:
                     site["unavailable"].append("WordPress update scan is missing or older than 24 hours")
-            site["http"] = "Not checked"
+            site["http"] = "Checks disabled"
             if cfg["http_checks"]:
                 site["http"] = http_check(site["public_url"])
-                if site["http"] == "unreachable from laptop" or re.match(r"HTTP [45]", site["http"]):
+                site["http_checked_at"] = time.time()
+                if not site["http"].startswith("Online"):
                     issue(site, "http", "Website check: " + site["http"])
             server["sites"].append(site)
         servers.append(server)
     objects = [obj for s in servers for obj in [s] + s["sites"]]
-    return {"snapshot_version": 2, "servers": servers, "checked_at": now, "last_attempt": now,
+    return {"snapshot_version": 3, "servers": servers, "checked_at": now, "last_attempt": now,
             "next_check": now + cfg["interval_minutes"] * 60,
             "interval_minutes": cfg["interval_minutes"], "error": "", "configured": True,
             "issue_count": sum(len(o["issues"]) for o in objects),
@@ -464,7 +493,7 @@ def tick(force=False):
             return read_json(CACHE / "snapshot.json", {}) | {"refreshing": True}
         previous = read_json(CACHE / "snapshot.json", {})
         now = time.time()
-        if now < previous.get("retry_after", 0) or (not force and previous.get("snapshot_version") == 2 and now < previous.get("next_check", 0)):
+        if now < previous.get("retry_after", 0) or (not force and previous.get("snapshot_version") == 3 and now < previous.get("next_check", 0)):
             return previous
         try:
             cfg = load_config()
@@ -478,7 +507,7 @@ def tick(force=False):
         except (DataError, TypeError, KeyError, ValueError, AttributeError) as error:
             # Keep the previous successful snapshot, including its old timestamp.
             message = str(error) if isinstance(error, DataError) else "Unexpected data or configuration; see README troubleshooting"
-            current = previous | {"snapshot_version": 2, "error": message, "last_attempt": now, "next_check": now + 300,
+            current = previous | {"snapshot_version": 3, "error": message, "last_attempt": now, "next_check": now + 300,
                                   "configured": (CONFIG / "token").exists()}
         atomic_json(CACHE / "snapshot.json", current)
         return current
@@ -529,12 +558,39 @@ def diagnose_metrics():
     return result
 
 
+def setup_ssh():
+    cfg = load_config()
+    api = API(read_token(), cfg["team_id"])
+    print("SSH maintenance checks\nUse an SSH alias or user@host that already works with a key.\nNo passwords, sudo, or server changes are used.\n")
+    for server in api.items("/servers"):
+        uid = str(server["uuid"])
+        current = cfg["ssh_hosts"].get(uid, "not configured")
+        print(f"\n{server.get('name', uid)} — {current}")
+        host = input("SSH alias/user@host (Enter keeps current; - disables): ").strip()
+        if not host:
+            continue
+        if host == "-":
+            cfg["ssh_hosts"].pop(uid, None)
+        else:
+            try:
+                result = ssh_health(host)
+            except DataError as error:
+                print(f"Not saved: {error}")
+                continue
+            cfg["ssh_hosts"][uid] = host
+            print("Connected. Reboot needed: " + str(result["reboot_required"]) + "; pending updates: " + str(result.get("updates")))
+        atomic_json(CONFIG / "config.json", cfg)
+    print("Saved. Click Refresh in OmaXCloud to show the results.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["tick", "refresh", "cached", "setup", "ui-state", "save-ui", "diagnose-metrics"])
+    parser.add_argument("command", choices=["tick", "refresh", "cached", "setup", "setup-ssh", "ui-state", "save-ui", "diagnose-metrics"])
     args = parser.parse_args()
     if args.command == "setup":
         setup()
+    elif args.command == "setup-ssh":
+        setup_ssh()
     elif args.command == "diagnose-metrics":
         print(json.dumps(diagnose_metrics(), indent=2))
     elif args.command == "save-ui":
