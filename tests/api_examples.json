@@ -1,0 +1,179 @@
+{
+  "/servers": {
+    "success": true,
+    "message": "Servers retrieved successfully.",
+    "data": {
+      "items": [
+        {
+          "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+          "name": "xcloud",
+          "status": "provisioned",
+          "status_readable": "Provisioned",
+          "ip_address": "203.0.113.42",
+          "provider": "digitalocean",
+          "stack": "lemp",
+          "php_version": "8.2",
+          "location": "New York",
+          "created_at": "2024-06-01T09:00:00Z",
+          "dashboard_url": "https://app.xcloud.host/server/a1b2c3d4-e5f6-7890-abcd-ef1234567890/dashboard"
+        }
+      ],
+      "pagination": {
+        "current_page": 1,
+        "last_page": 3,
+        "per_page": 15,
+        "total": 42
+      }
+    }
+  },
+  "/servers/{uuid}/sites": {
+    "success": true,
+    "message": "Sites retrieved successfully.",
+    "data": {
+      "items": [
+        {
+          "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+          "name": "example.com",
+          "domain_name": "example.com",
+          "type": "wordpress",
+          "status": "provisioned",
+          "deploy_state": "deployed",
+          "php_version": "8.2",
+          "server_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+          "created_at": "2024-06-10T14:30:00Z"
+        }
+      ],
+      "pagination": {
+        "total": 1,
+        "per_page": 15,
+        "current_page": 1,
+        "last_page": 1
+      }
+    }
+  },
+  "/servers/{uuid}/monitoring": {
+    "success": true,
+    "message": "Monitoring stats retrieved successfully.",
+    "data": {
+      "cpu_usage": 12.4,
+      "memory_usage": 68.1,
+      "disk_usage": 34.7,
+      "uptime": "15 days, 3:42:10",
+      "recorded_at": "2025-03-14T16:00:00Z"
+    }
+  },
+  "/servers/{uuid}/services": {
+    "success": true,
+    "message": "Services retrieved successfully.",
+    "data": {
+      "items": [
+        {
+          "name": "nginx",
+          "label": "NGINX",
+          "status": "active",
+          "version": null,
+          "is_required": true,
+          "auto_healing": true,
+          "can_restart": true,
+          "can_start": false,
+          "can_stop": false,
+          "can_install": false
+        },
+        {
+          "name": "php",
+          "label": "PHP 8.2",
+          "status": "active",
+          "version": "8.2",
+          "is_required": false,
+          "auto_healing": false,
+          "can_restart": true,
+          "can_start": false,
+          "can_stop": true,
+          "can_install": false
+        }
+      ],
+      "count": 2,
+      "installable": [
+        "redis",
+        "nodejs"
+      ]
+    }
+  },
+  "/sites/{uuid}/backups": {
+    "success": true,
+    "message": "Backups retrieved successfully.",
+    "data": {
+      "items": [
+        {
+          "uuid": "9b1f2a3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+          "file_name": "example.com-2025-03-14.tar.gz",
+          "file_size": "524288000",
+          "type": "full",
+          "status": "completed",
+          "is_remote": false,
+          "date": "2025-03-14 02:00:00",
+          "created_at": "2025-03-14T02:00:00.000000Z"
+        }
+      ],
+      "pagination": {
+        "total": 1,
+        "per_page": 15,
+        "current_page": 1,
+        "last_page": 1
+      }
+    }
+  },
+  "/sites/{uuid}/ssl": {
+    "success": true,
+    "message": "Success",
+    "data": {
+      "provider": "xcloud",
+      "status": "installed",
+      "expires_at": "2025-06-10T00:00:00Z",
+      "hostnames": [
+        "example.com",
+        "www.example.com"
+      ]
+    }
+  },
+  "/sites/{uuid}/wordpress/updates": {
+    "success": true,
+    "message": "Success",
+    "data": {
+      "site_uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "core": {
+        "current_version": "6.4.2",
+        "available_version": "6.5.0",
+        "update_available": true,
+        "is_security_update": false
+      },
+      "plugins": {
+        "total": 23,
+        "active": 18,
+        "with_updates": 5,
+        "with_security_updates": 1,
+        "items": [
+          {
+            "slug": "woocommerce",
+            "name": "WooCommerce",
+            "current_version": "8.5.2",
+            "available_version": "8.6.0",
+            "is_security_update": true
+          }
+        ]
+      },
+      "themes": {
+        "total": 3,
+        "active": 1,
+        "with_updates": 1,
+        "with_security_updates": 0,
+        "items": []
+      },
+      "summary": {
+        "total_pending": 7,
+        "security_pending": 1,
+        "last_scanned_at": "2026-05-06T12:00:00Z"
+      }
+    }
+  }
+}

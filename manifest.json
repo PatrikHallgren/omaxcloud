@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "patrikhallgren.omaxcloud",
+  "name": "OmaXCloud",
+  "version": "0.1.0",
+  "author": "Patrik Hallgren",
+  "description": "Hourly xCloud server and site health, backups and maintenance",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "Panel.qml"},
+  "barWidget": {
+    "displayName": "OmaXCloud",
+    "description": "Your xCloud servers at a glance",
+    "category": "Info",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
